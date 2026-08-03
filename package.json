@@ -1,0 +1,105 @@
+{
+  "name": "obsidianlike-preview",
+  "displayName": "Obsidian-like Preview",
+  "description": "Panel lateral que muestra la nota Markdown activa renderizada con el mismo motor (CodeMirror 6) que la extensión Obsidian-like, sincronizado en vivo con el documento.",
+  "version": "0.0.1",
+  "publisher": "angelCastro",
+  "private": true,
+  "icon": "media/obsidian-icon-violeta.png",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "extensionDependencies": [
+    "angelCastro.obsidian-like"
+  ],
+  "activationEvents": [
+    "onLanguage:markdown"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "obsidianlikePreview.refresh",
+        "title": "Obsidian-like Preview: Actualizar panel",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "obsidianlikePreview.pinActive",
+        "title": "Obsidian-like Preview: Fijar la nota activa en el panel",
+        "icon": "$(pin)"
+      },
+      {
+        "command": "obsidianlikePreview.unpin",
+        "title": "Obsidian-like Preview: Dejar de fijar nota (seguir la pestaña activa)",
+        "icon": "$(pinned)"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "obsidianlikePreviewContainer",
+          "title": "Obsidian-like Preview",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "obsidianlikePreviewContainer": [
+        {
+          "type": "webview",
+          "id": "obsidianlikePreview.panelView",
+          "name": "",
+          "contextualTitle": "Obsidian-like Preview"
+        }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "obsidianlikePreview.refresh",
+          "when": "view == obsidianlikePreview.panelView",
+          "group": "navigation"
+        },
+        {
+          "command": "obsidianlikePreview.pinActive",
+          "when": "view == obsidianlikePreview.panelView && !obsidianlikePreview.pinned",
+          "group": "navigation"
+        },
+        {
+          "command": "obsidianlikePreview.unpin",
+          "when": "view == obsidianlikePreview.panelView && obsidianlikePreview.pinned",
+          "group": "navigation"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Obsidian-like Preview",
+      "properties": {
+        "obsidianlikePreview.pinnedNote": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Ruta de la nota (relativa a la raíz del workspace, p. ej. `Proyectos/Idea.md`, o absoluta) que se muestra siempre en el panel, ignorando la pestaña activa. Vacío = seguir la pestaña Markdown activa (comportamiento por defecto). Se puede fijar con el comando/botón \"Fijar la nota activa\" o editando este valor directamente."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "lint": "eslint src --ext ts --no-color",
+    "package": "npm run compile && vsce package --allow-missing-repository"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.1",
+    "@types/vscode": "^1.85.0",
+    "@typescript-eslint/eslint-plugin": "^8.65.0",
+    "@typescript-eslint/parser": "^8.65.0",
+    "@vscode/vsce": "^3.0.0",
+    "eslint": "^10.8.0",
+    "typescript": "^5.3.3"
+  }
+}

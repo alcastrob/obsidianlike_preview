@@ -11,6 +11,7 @@ Esta extensión **depende** de que `obsidianlike` (`angelCastro.obsidian-like`) 
 - **Panel "Obsidian-like Preview"** (icono en la barra de actividad, se puede arrastrar a la barra lateral secundaria/derecha): muestra la nota Markdown de la pestaña activa, renderizada con el mismo "live preview" que `obsidianlike` (encabezados, listas, tablas, callouts, código, imágenes, `[[wikilinks]]` con clic para abrir/crear, transclusiones `![[nota]]`).
 - **Sincronizado en ambas direcciones**: como el motor de `obsidianlike` no tiene un modo solo-lectura (es CodeMirror 6 siempre editable, y su estado interno no se expone fuera del bundle), este panel es en realidad una **vista secundaria en vivo** de la misma nota — editar en el panel edita el documento real, y cualquier cambio hecho en otro editor de esa misma nota se refleja aquí automáticamente.
 - **Comando "Obsidian-like Preview: Actualizar panel"** (icono de refresco en el título del panel): fuerza una reconstrucción completa, útil si algo quedó desincronizado.
+- **Consultas en vivo `\`\`\`tasks\`\`\`** (requiere la extensión hermana `angelCastro.obsidian-like-tasks` instalada): igual que en `obsidianlike`, se listan/marcan/editan tareas de todo el vault, y el listado se refresca solo cuando una tarea cambia en cualquier otro editor.
 - **Fijar una nota concreta** (en vez de seguir la pestaña activa), de dos formas equivalentes — ambas leen/escriben la misma opción `obsidianlikePreview.pinnedNote`:
   1. **Botón/comando "Fijar la nota activa en el panel"** (📌, en el título del panel): fija la nota que tengas abierta en el editor principal en ese momento.
   2. **Editar la opción directamente** en la configuración: `obsidianlikePreview.pinnedNote`, admite tanto una ruta relativa a la raíz del workspace (p. ej. `Proyectos/Idea.md`) como una ruta absoluta.
@@ -21,7 +22,7 @@ Esta extensión **depende** de que `obsidianlike` (`angelCastro.obsidian-like`) 
 ### Fuera de alcance (v1)
 
 Para mantener el panel simple, deliberadamente **no** se implementa:
-- Consultas en vivo `\`\`\`tasks\`\`\`` / `\`\`\`dataview\`\`\`` (esos bloques se quedan en su estado "cargando" indefinidamente — el widget en sí sigue siendo el de `obsidianlike`, solo que este panel no responde a esas peticiones).
+- Consultas en vivo `\`\`\`dataview\`\`\`` (ese bloque se queda en su estado "cargando" indefinidamente — el widget en sí sigue siendo el de `obsidianlike`, solo que este panel no responde a esa petición). Los bloques `\`\`\`tasks\`\`\`` sí están soportados, ver más arriba.
 - Renombrar la nota desde el título (H1) del panel.
 - El *round-trip* `get-content`/`onWillSaveTextDocument` que usa `obsidianlike` para capturar el último tecleo justo antes de guardar: si guardas (Ctrl+S) en otro editor a menos de ~400 ms del último carácter escrito en este panel, ese último tecleo podría no llegar a tiempo al documento real.
 

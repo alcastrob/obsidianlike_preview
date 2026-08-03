@@ -13,9 +13,52 @@ import {
 } from "../noteUtils";
 
 const OBSIDIANLIKE_EXTENSION_ID = "angelCastro.obsidian-like";
+const TASKS_EXTENSION_ID = "angelCastro.obsidian-like-tasks";
 
 function escapeHtml(text: string): string {
   return text.replace(/[&<>]/g, (c) => (c === "&" ? "&amp;" : c === "<" ? "&lt;" : "&gt;"));
+}
+
+/**
+ * Subconjunto de la API pública de `obsidianlike_tasks` que necesita este panel para
+ * resolver bloques ```tasks```. Misma forma que `TasksExtensionApi` en
+ * `../obsidianlike/src/extension.ts` (ver su CLAUDE.md, "Optional soft dependency") —
+ * dependencia blanda: sin entrada en `extensionDependencies`, así que si la extensión
+ * de tareas no está instalada los bloques ```tasks``` simplemente se quedan vacíos en
+ * vez de romper el panel.
+ */
+interface TasksQueryResultDTO {
+  items: unknown[];
+  groups: Array<{ name: string; items: unknown[] }> | null;
+  unrecognizedLines: string[];
+}
+interface TasksExtensionApi {
+  renderTasksQuery?(queryText: string, queryFilePath?: string): TasksQueryResultDTO;
+  toggleTaskAtLocation?(path: string, line: number): Promise<void>;
+  editTaskAtLocation?(path: string, line: number): Promise<void>;
+  onDidChangeTasks?: vscode.Event<void>;
+}
+
+let tasksApiPromise: Promise<TasksExtensionApi | undefined> | undefined;
+
+/** Misma lógica "cachea el éxito, reintenta el fallo" que `getTasksApi()` en `../obsidianlike/src/extension.ts`. */
+function getTasksApi(): Promise<TasksExtensionApi | undefined> {
+  if (!tasksApiPromise) {
+    tasksApiPromise = (async () => {
+      const ext = vscode.extensions.getExtension(TASKS_EXTENSION_ID);
+      if (!ext) {
+        tasksApiPromise = undefined;
+        return undefined;
+      }
+      try {
+        return (await ext.activate()) as TasksExtensionApi;
+      } catch {
+        tasksApiPromise = undefined;
+        return undefined;
+      }
+    })();
+  }
+  return tasksApiPromise;
 }
 
 /**
@@ -75,10 +118,12 @@ export class PanelViewProvider implements vscode.WebviewViewProvider {
   private noteIndex: Array<{ name: string; dir: string }> = [];
   /** Uri de la nota fijada vía `obsidianlikePreview.pinnedNote`, o `undefined` si el panel debe seguir la pestaña activa. */
   private pinnedUri: vscode.Uri | undefined;
+  private subscribedToTasksChanges = false;
 
   constructor(private readonly tracker: ActiveMarkdownDocumentTracker, context: vscode.ExtensionContext) {
     void this.refreshNoteIndex();
     this.refreshPinnedUri();
+    void this.ensureSubscribedToTasksChanges();
     const watcher = vscode.workspace.createFileSystemWatcher("**/*.md");
     context.subscriptions.push(
       watcher,
@@ -177,6 +222,34 @@ export class PanelViewProvider implements vscode.WebviewViewProvider {
   refresh(): void {
     this.boundDocument = undefined;
     void this.bindToActiveDocument();
+  }
+
+  /**
+   * Se suscribe (una sola vez) a `onDidChangeTasks` de la extensión de tareas, para reenviar
+   * `tasks-changed` al webview y que cada bloque ```tasks``` visible se re-consulte cuando una
+   * tarea cambia en cualquier otro sitio del vault. Reintenta cada 1.5s unas cuantas veces (igual
+   * que `ensureSubscribedToTasksChanges` en `../obsidianlike/src/extension.ts`) por si esta
+   * extensión se activa antes de que la de tareas esté lista.
+   */
+  private async ensureSubscribedToTasksChanges(retriesLeft = 5): Promise<void> {
+    if (this.subscribedToTasksChanges) {
+      return;
+    }
+    const api = await getTasksApi();
+    if (!api?.onDidChangeTasks) {
+      if (retriesLeft > 0) {
+        setTimeout(() => void this.ensureSubscribedToTasksChanges(retriesLeft - 1), 1500);
+      }
+      return;
+    }
+    this.subscribedToTasksChanges = true;
+    api.onDidChangeTasks(() => {
+      try {
+        this.view?.webview.postMessage({ type: "tasks-changed" });
+      } catch {
+        /* el webview puede no estar listo todavía */
+      }
+    });
   }
 
   private async refreshNoteIndex(): Promise<void> {
@@ -373,8 +446,57 @@ export class PanelViewProvider implements vscode.WebviewViewProvider {
         return;
       }
 
-      // 'rename' (edición del título H1) y las consultas de ```tasks```/```dataview``` no
-      // están soportadas desde este panel de vista previa — se ignoran en vez de fallar.
+      case "run-tasks-query": {
+        if (!doc) return;
+        const query = (message.query as string) || "";
+        try {
+          const tasksApi = await getTasksApi();
+          // Igual que en `../obsidianlike/src/extension.ts`: la ruta relativa de la propia nota
+          // que contiene el bloque, para que `{{query.file.path}}` dentro de la query se expanda.
+          const queryFilePath = vscode.workspace.asRelativePath(doc.uri, false);
+          const result: TasksQueryResultDTO = tasksApi?.renderTasksQuery
+            ? tasksApi.renderTasksQuery(query, queryFilePath)
+            : { items: [], groups: null, unrecognizedLines: [] };
+          this.view?.webview.postMessage({ type: "tasks-query-result", query, result });
+        } catch (error) {
+          log(`run-tasks-query: ERROR ${error}`);
+          this.view?.webview.postMessage({
+            type: "tasks-query-result",
+            query,
+            result: { items: [], groups: null, unrecognizedLines: [] },
+          });
+        }
+        return;
+      }
+
+      case "toggle-task-at-location": {
+        try {
+          const tasksApi = await getTasksApi();
+          await tasksApi?.toggleTaskAtLocation?.(message.path as string, message.line as number);
+        } catch (error) {
+          log(`toggle-task-at-location: ERROR ${error}`);
+        }
+        return;
+      }
+
+      case "edit-task-at-location": {
+        try {
+          const tasksApi = await getTasksApi();
+          if (!tasksApi?.editTaskAtLocation) {
+            void vscode.window.showInformationMessage(
+              'Editar tareas requiere la extensión "Obsidian-like Tasks" instalada y actualizada.'
+            );
+            return;
+          }
+          await tasksApi.editTaskAtLocation(message.path as string, message.line as number);
+        } catch (error) {
+          log(`edit-task-at-location: ERROR ${error}`);
+        }
+        return;
+      }
+
+      // 'rename' (edición del título H1) y las consultas ```dataview``` no están soportadas
+      // desde este panel de vista previa — se ignoran en vez de fallar.
       default:
         return;
     }

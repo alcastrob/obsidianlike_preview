@@ -656,7 +656,7 @@ export class PanelViewProvider implements vscode.WebviewViewProvider {
     #doc-breadcrumb {
       flex-shrink: 0;
       max-width: 780px; width: 100%;
-      margin: 0 auto; padding: 8px 20px 0; box-sizing: border-box;
+      margin: 0 auto; padding: 4px 8px 0; box-sizing: border-box;
       font-size: 11px; opacity: 0.55;
       display: flex; align-items: center; justify-content: center; gap: 2px; flex-wrap: wrap;
       user-select: none;
@@ -668,7 +668,7 @@ export class PanelViewProvider implements vscode.WebviewViewProvider {
     #doc-header {
       flex-shrink: 0;
       max-width: 780px; width: 100%;
-      margin: 0 auto; padding: 14px 20px 0; box-sizing: border-box;
+      margin: 0 auto; padding: 6px 8px 0; box-sizing: border-box;
     }
     #doc-title {
       font-size: 1.5em; font-weight: 700; line-height: 1.3;
@@ -686,6 +686,16 @@ export class PanelViewProvider implements vscode.WebviewViewProvider {
       margin: 0;
     }
     #editor { flex: 1; min-height: 0; overflow: hidden; }
+    /* editor.js fija .cm-content con max-width:780px y padding:16px 28px 120px vía
+       EditorView.theme() — pensado para el editor principal a ancho completo. En este
+       panel lateral (normalmente mucho más estrecho que 780px) ese padding lateral es
+       el margen visible más grande alrededor de la nota, así que se reduce aquí. Necesita
+       !important: la regla de editor.js se inyecta en un <style> propio después de este,
+       con la misma especificidad (una clase), y ganaría por orden en el DOM si no. */
+    #editor .cm-content {
+      max-width: none !important;
+      padding: 6px 10px 24px !important;
+    }
   </style>
   <style id="__obsidian-theme"></style>
 </head>

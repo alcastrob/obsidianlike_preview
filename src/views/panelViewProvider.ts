@@ -14,6 +14,12 @@ import {
 
 const OBSIDIANLIKE_EXTENSION_ID = "angelCastro.obsidian-like";
 const TASKS_EXTENSION_ID = "angelCastro.obsidian-like-tasks";
+/**
+ * viewType del editor personalizado de `obsidianlike` (ver su `package.json` → `customEditors`,
+ * `priority: "default"` para `*.md`). Es el render que este panel quiere para las notas `.md`
+ * cuando el usuario pulsa un wikilink: se abren en el área de editores normal de VS Code, no aquí.
+ */
+const OBSIDIANLIKE_MARKDOWN_EDITOR_VIEW_TYPE = "vaultTool.markdownEditor";
 
 function escapeHtml(text: string): string {
   return text.replace(/[&<>]/g, (c) => (c === "&" ? "&amp;" : c === "<" ? "&lt;" : "&gt;"));
@@ -344,13 +350,22 @@ export class PanelViewProvider implements vscode.WebviewViewProvider {
 
   private async handleMessage(message: Record<string, unknown>): Promise<void> {
     const doc = this.boundDocument;
+    // Traza de todo lo que llega del webview salvo lo muy frecuente (edición/cursor/scroll) —
+    // clave para diagnosticar "pulso un wikilink y no pasa nada": si el `open-note` no aparece
+    // aquí, el problema está en `editor.js`/el canal; si aparece, está en el manejo de abajo.
+    if (message.type !== "sync" && message.type !== "cursor-position" && message.type !== "scroll-position") {
+      log(`handleMessage: ${String(message.type)} ${JSON.stringify(message).slice(0, 300)}`);
+    }
     switch (message.type) {
       case "sync":
         await this.applySync(message.content as string);
         return;
 
       case "open-note": {
-        if (!doc) return;
+        if (!doc) {
+          log("open-note: ignorado (no hay nota vinculada al panel todavía)");
+          return;
+        }
         const raw = ((message.name as string) || "").trim();
         if (!raw) return;
         const basePathRel = (message.basePath as string | undefined)?.trim();
@@ -366,11 +381,14 @@ export class PanelViewProvider implements vscode.WebviewViewProvider {
             await vscode.workspace.fs.createDirectory(vscode.Uri.file(path.dirname(newPath)));
             await vscode.workspace.fs.writeFile(vscode.Uri.file(newPath), new Uint8Array());
             targetUri = vscode.Uri.file(newPath);
+            log(`open-note: "${notePart}" no existía; creada en "${newPath}"`);
           } catch (error) {
             log(`open-note: no se pudo crear "${newPath}": ${error}`);
+            void vscode.window.showErrorMessage(`No se pudo crear la nota "${notePart}": ${error instanceof Error ? error.message : String(error)}`);
             return;
           }
         }
+        log(`open-note: "${raw}" -> ${targetUri.fsPath}${section ? ` #${section}` : ""}`);
         await this.openInEditor(targetUri, section);
         return;
       }
@@ -381,7 +399,11 @@ export class PanelViewProvider implements vscode.WebviewViewProvider {
         if (!raw) return;
         const { notePart, section } = splitTarget(raw);
         const targetUri = await resolveNoteUri(notePart, path.dirname(doc.uri.fsPath));
-        if (!targetUri) return;
+        if (!targetUri) {
+          log(`open-transclusion: no se encontró ninguna nota para "${raw}"`);
+          return;
+        }
+        log(`open-transclusion: "${raw}" -> ${targetUri.fsPath}${section ? ` #${section}` : ""}`);
         await this.openInEditor(targetUri, section);
         return;
       }
@@ -558,10 +580,18 @@ export class PanelViewProvider implements vscode.WebviewViewProvider {
   }
 
   /**
-   * Abre `uri` (opcionalmente en una sección) en el editor principal — nunca en este
-   * panel — igual que `openNote()` en `obsidianlike_links`: `vscode.open` con `selection`
-   * no funciona sobre el editor personalizado de `obsidianlike`, así que se delega el
-   * scroll en su comando `vaultTool.openNoteAtLine` cuando está disponible.
+   * Abre `uri` (opcionalmente en una sección) en el área de editores normal de VS Code —
+   * nunca en este panel — usando el editor personalizado de `obsidianlike` para las notas
+   * `.md` (su render). Preferencias, en orden:
+   *   1. `vaultTool.openNoteAtLine` (comando de `obsidianlike`): `vscode.openWith` con su
+   *      viewType + scroll a la sección vía un postMessage retardado (`vscode.open` con
+   *      `selection` no funciona sobre ese editor personalizado, de ahí el comando).
+   *   2. `vscode.openWith` directo con el viewType, por si el comando no está registrado
+   *      (versión antigua de `obsidianlike`) pero el editor sí.
+   *   3. `vscode.open` a secas: al estar ese editor como `priority: "default"` para `*.md`,
+   *      también acaba usándolo; y para destinos que no sean `.md` es lo correcto igualmente.
+   * Cualquier fallo se registra Y se muestra al usuario (antes solo iba al log, así que un
+   * wikilink que no abría nada no daba ninguna pista de por qué).
    */
   private async openInEditor(uri: vscode.Uri, section: string | null): Promise<void> {
     let line = 0;
@@ -577,13 +607,42 @@ export class PanelViewProvider implements vscode.WebviewViewProvider {
         /* la nota puede no existir todavía (recién creada vacía) */
       }
     }
-    const commands = await vscode.commands.getCommands(true);
-    if (commands.includes("vaultTool.openNoteAtLine")) {
-      await vscode.commands.executeCommand("vaultTool.openNoteAtLine", uri, line);
-      return;
+    const isMarkdown = uri.fsPath.toLowerCase().endsWith(".md");
+    try {
+      if (isMarkdown) {
+        const commands = await vscode.commands.getCommands(true);
+        if (commands.includes("vaultTool.openNoteAtLine")) {
+          log(`openInEditor: vaultTool.openNoteAtLine("${uri.fsPath}", ${line})`);
+          await vscode.commands.executeCommand("vaultTool.openNoteAtLine", uri, line);
+          return;
+        }
+        try {
+          log(`openInEditor: vscode.openWith ${OBSIDIANLIKE_MARKDOWN_EDITOR_VIEW_TYPE} ("${uri.fsPath}")`);
+          await vscode.commands.executeCommand(
+            "vscode.openWith",
+            uri,
+            OBSIDIANLIKE_MARKDOWN_EDITOR_VIEW_TYPE,
+            vscode.ViewColumn.Active
+          );
+          return;
+        } catch (inner) {
+          log(`openInEditor: openWith falló (${inner}); pruebo vscode.open`);
+        }
+      }
+      const position = new vscode.Position(line, 0);
+      log(`openInEditor: vscode.open ("${uri.fsPath}")`);
+      await vscode.commands.executeCommand("vscode.open", uri, {
+        viewColumn: vscode.ViewColumn.Active,
+        selection: new vscode.Range(position, position),
+      });
+    } catch (error) {
+      log(`openInEditor: ERROR abriendo "${uri.fsPath}": ${error}`);
+      void vscode.window.showErrorMessage(
+        `No se pudo abrir "${vscode.workspace.asRelativePath(uri, false)}": ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      );
     }
-    const position = new vscode.Position(line, 0);
-    await vscode.commands.executeCommand("vscode.open", uri, { selection: new vscode.Range(position, position) });
   }
 
   private getThemeCss(): string {

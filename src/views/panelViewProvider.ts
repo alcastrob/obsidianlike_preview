@@ -215,7 +215,14 @@ export class PanelViewProvider implements vscode.WebviewViewProvider {
 
   resolveWebviewView(webviewView: vscode.WebviewView): void {
     this.view = webviewView;
-    webviewView.webview.onDidReceiveMessage((message) => void this.handleMessage(message));
+    webviewView.webview.onDidReceiveMessage((message) => {
+      // Sin este catch, cualquier excepción en un handler moría en silencio (`void`) y el
+      // clic "no hacía nada".
+      this.handleMessage(message).catch((error) => {
+        log(`handleMessage: ERROR en "${String(message?.type)}": ${error}`);
+        void vscode.window.showErrorMessage(`Error en la vista previa: ${error instanceof Error ? error.message : String(error)}`);
+      });
+    });
     webviewView.onDidChangeVisibility(() => {
       if (webviewView.visible) {
         void this.bindToActiveDocument();
@@ -373,6 +380,12 @@ export class PanelViewProvider implements vscode.WebviewViewProvider {
         const currentDir =
           basePathRel && vaultRoot ? path.dirname(path.join(vaultRoot, basePathRel)) : path.dirname(doc.uri.fsPath);
         const { notePart, section } = splitTarget(raw);
+        // `[[#sección]]`: sin nombre de nota es un enlace a la propia nota; buscarla por
+        // nombre vacío acabaría creando un ".md" sin nombre.
+        if (!notePart.trim()) {
+          if (section) await this.openInEditor(doc.uri, section);
+          return;
+        }
         let targetUri = await resolveNoteUri(notePart, currentDir);
         if (!targetUri) {
           // Igual que en `obsidianlike`: un wikilink a una nota inexistente la crea.
@@ -408,6 +421,19 @@ export class PanelViewProvider implements vscode.WebviewViewProvider {
         return;
       }
 
+      // Enlace de origen «(Nota)» de una fila de un bloque ```tasks```: lleva la ruta (relativa
+      // al workspace) y la línea exacta de la tarea, que puede estar en cualquier nota.
+      case "open-task-location": {
+        const relPath = ((message.path as string) || "").trim();
+        const folder = vscode.workspace.workspaceFolders?.[0];
+        if (!relPath || !folder) return;
+        const line = typeof message.line === "number" ? message.line : 0;
+        const targetUri = vscode.Uri.joinPath(folder.uri, relPath.replace(/\\/g, "/"));
+        log(`open-task-location: ${targetUri.fsPath} línea ${line}`);
+        await this.openInEditor(targetUri, null, line);
+        return;
+      }
+
       case "get-transclusion": {
         if (!doc) return;
         await this.handleGetTransclusion(doc, message.id as string, ((message.target as string) || "").trim());
@@ -435,9 +461,33 @@ export class PanelViewProvider implements vscode.WebviewViewProvider {
 
       case "open-url": {
         const url = ((message.url as string) || "").trim();
-        if (url) {
+        if (!url) return;
+        // `[texto](nota.md)` llega aquí igual que `[texto](https://...)`. Sin esquema
+        // (o `file:`) es una ruta local: `openExternal` no hace nada con ella, así que se
+        // resuelve contra la nota y se abre en el área de editores.
+        if (/^[a-z][a-z0-9+.-]+:/i.test(url) && !/^file:/i.test(url)) {
           void vscode.env.openExternal(vscode.Uri.parse(url));
+          return;
         }
+        if (!doc) return;
+        const [withoutHash, hash = ""] = url.replace(/^file:\/\/\/?/i, "").split("#", 2);
+        let decoded = withoutHash;
+        try {
+          decoded = decodeURIComponent(withoutHash);
+        } catch {
+          /* ya venía sin codificar */
+        }
+        const targetPath = path.isAbsolute(decoded) ? decoded : path.resolve(path.dirname(doc.uri.fsPath), decoded);
+        const targetUri = vscode.Uri.file(targetPath);
+        try {
+          await vscode.workspace.fs.stat(targetUri);
+        } catch {
+          log(`open-url: "${url}" no existe en "${targetPath}"`);
+          void vscode.window.showErrorMessage(`No se encontró el archivo "${decoded}".`);
+          return;
+        }
+        log(`open-url: "${url}" -> ${targetPath}`);
+        await this.openInEditor(targetUri, hash ? decodeURIComponent(hash) : null);
         return;
       }
 
@@ -593,8 +643,8 @@ export class PanelViewProvider implements vscode.WebviewViewProvider {
    * Cualquier fallo se registra Y se muestra al usuario (antes solo iba al log, así que un
    * wikilink que no abría nada no daba ninguna pista de por qué).
    */
-  private async openInEditor(uri: vscode.Uri, section: string | null): Promise<void> {
-    let line = 0;
+  private async openInEditor(uri: vscode.Uri, section: string | null, explicitLine?: number): Promise<void> {
+    let line = explicitLine ?? 0;
     if (section) {
       try {
         const text = (await vscode.workspace.openTextDocument(uri)).getText();
